@@ -28,15 +28,23 @@ Inference runs entirely on the Python backend — the browser only sends text an
 
 ## Quick Start
 
-**1. Start the backend**
+### Option A — Conda (recommended for bare Python)
+
+**1. Create the backend environment (once)**
 
 ```bash
-pip install fastapi "uvicorn[standard]" python-multipart transformers optimum[onnxruntime]
+conda env create -f backend/environment.yml
+conda activate deception-classifier
+```
+
+**2. Start the backend**
+
+```bash
 cd backend
 python -m uvicorn app:app --reload --port 8000
 ```
 
-**2. Start the frontend**
+**3. Start the frontend** (separate terminal)
 
 ```bash
 npm install
@@ -44,6 +52,29 @@ npm run dev
 ```
 
 Open http://localhost:5173.
+
+---
+
+### Option B — pip only (Python 3.9+ required)
+
+```bash
+pip install -r backend/requirements.txt
+cd backend && python -m uvicorn app:app --reload --port 8000
+# separate terminal:
+npm install && npm run dev
+```
+
+---
+
+### Option C — Docker (no Python or Node setup needed)
+
+```bash
+docker compose up --build
+# frontend still needs Node:
+npm install && npm run dev
+```
+
+Backend runs at http://localhost:8000, frontend at http://localhost:5173.
 
 ## Build for Production
 
