@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Python cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Local model artifacts (large files)
 models/
 *.zip
