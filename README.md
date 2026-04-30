@@ -60,7 +60,7 @@ Zip your model folder (safetensors **or** ONNX — both work) and upload it in t
 
 ```bash
 # Option 1: original PyTorch/safetensors weights (simplest)
-zip -r my_model.zip models/modernbert_trained/model/
+zip -r my_model.zip models/modernbert_trained
 
 # Option 2: ONNX export (faster inference, slightly smaller)
 pip install optimum[exporters]
