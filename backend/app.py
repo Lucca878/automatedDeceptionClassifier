@@ -10,8 +10,10 @@ POST /predict         → { "text": "..." } → { label, score, all_scores }
 """
 
 import io
+import inspect
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -56,6 +58,68 @@ def _find_model_root(base: Path) -> Path:
     return base
 
 
+def _model_forward_arg_names(model: Any) -> set[str]:
+    """Return accepted kwargs for model.forward when discoverable."""
+    try:
+        signature = inspect.signature(model.forward)
+    except Exception:  # noqa: BLE001
+        return set()
+
+    return {
+        name
+        for name in signature.parameters
+        if name not in {"self", "args", "kwargs"}
+    }
+
+
+def _drop_tokenizer_input_name(tokenizer: Any, name: str) -> None:
+    """Drop one tokenizer output key so pipeline won't pass unsupported kwargs."""
+    if tokenizer is None:
+        return
+
+    model_input_names = list(getattr(tokenizer, "model_input_names", []))
+    if name in model_input_names:
+        tokenizer.model_input_names = [item for item in model_input_names if item != name]
+
+    if name == "token_type_ids":
+        # Some tokenizers still emit this by default even when model doesn't support it.
+        if hasattr(tokenizer, "return_token_type_ids"):
+            setattr(tokenizer, "return_token_type_ids", False)
+        if hasattr(tokenizer, "init_kwargs") and isinstance(tokenizer.init_kwargs, dict):
+            tokenizer.init_kwargs["return_token_type_ids"] = False
+
+
+def _extract_unexpected_kwarg(error_message: str) -> Optional[str]:
+    match = re.search(r"unexpected keyword argument '([^']+)'", error_message)
+    return match.group(1) if match else None
+
+
+def _sanitize_tokenizer_inputs(tokenizer: Any, model: Any) -> None:
+    """Align tokenizer outputs with loaded model.forward kwargs."""
+    if tokenizer is None or model is None:
+        return
+
+    accepted_kwargs = _model_forward_arg_names(model)
+
+    # Generic alignment: only keep keys accepted by model.forward.
+    model_input_names = list(getattr(tokenizer, "model_input_names", []))
+    if accepted_kwargs and model_input_names:
+        filtered_input_names = [name for name in model_input_names if name in accepted_kwargs]
+        if filtered_input_names:
+            tokenizer.model_input_names = filtered_input_names
+
+    model_type = getattr(getattr(model, "config", None), "model_type", "")
+    type_vocab_size = getattr(getattr(model, "config", None), "type_vocab_size", None)
+    should_drop_token_type_ids = (
+        model_type == "distilbert"
+        or (accepted_kwargs and "token_type_ids" not in accepted_kwargs)
+        or (isinstance(type_vocab_size, int) and type_vocab_size <= 1)
+    )
+
+    if should_drop_token_type_ids:
+        _drop_tokenizer_input_name(tokenizer, "token_type_ids")
+
+
 def _load_pipeline_from_dir(model_root: Path) -> Any:
     """Load a HuggingFace pipeline from a local directory.
 
@@ -68,7 +132,6 @@ def _load_pipeline_from_dir(model_root: Path) -> Any:
     # Some models (e.g. ModernBERT) ship with tokenizer_class=TokenizersBackend,
     # which AutoTokenizer cannot resolve.  Patch it in-place before loading.
     tok_cfg_path = model_root / "tokenizer_config.json"
-    _patched = False
     if tok_cfg_path.exists():
         with open(tok_cfg_path, encoding="utf-8") as fh:
             tok_cfg = json.load(fh)
@@ -77,7 +140,6 @@ def _load_pipeline_from_dir(model_root: Path) -> Any:
             tok_cfg["tokenizer_class"] = "PreTrainedTokenizerFast"
             with open(tok_cfg_path, "w", encoding="utf-8") as fh:
                 json.dump(tok_cfg, fh, indent=2, ensure_ascii=False)
-            _patched = True
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(str(model_root))
@@ -97,6 +159,7 @@ def _load_pipeline_from_dir(model_root: Path) -> Any:
         ort_model = ORTModelForSequenceClassification.from_pretrained(
             str(model_root), file_name=onnx_file.name
         )
+        _sanitize_tokenizer_inputs(tokenizer, ort_model)
         return hf_pipeline(
             "text-classification",
             model=ort_model,
@@ -110,6 +173,7 @@ def _load_pipeline_from_dir(model_root: Path) -> Any:
         from transformers import pipeline as hf_pipeline
 
         pt_model = AutoModelForSequenceClassification.from_pretrained(str(model_root))
+        _sanitize_tokenizer_inputs(tokenizer, pt_model)
         return hf_pipeline(
             "text-classification",
             model=pt_model,
@@ -206,6 +270,7 @@ def load_remote_model(req: RemoteModelRequest) -> dict:
             top_k=None,
             device="cpu",
         )
+        _sanitize_tokenizer_inputs(getattr(_pipeline, "tokenizer", None), getattr(_pipeline, "model", None))
     except Exception as exc:  # noqa: BLE001
         _pipeline = None
         raise HTTPException(
@@ -231,7 +296,19 @@ def predict(req: PredictRequest) -> dict:
     try:
         results = _pipeline(req.text)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
+        message = str(exc)
+        # Self-heal generic mismatch: model.forward got an unexpected tokenizer kwarg.
+        if "unexpected keyword argument" in message:
+            bad_kwarg = _extract_unexpected_kwarg(message)
+            if bad_kwarg:
+                _drop_tokenizer_input_name(getattr(_pipeline, "tokenizer", None), bad_kwarg)
+            _sanitize_tokenizer_inputs(getattr(_pipeline, "tokenizer", None), getattr(_pipeline, "model", None))
+            try:
+                results = _pipeline(req.text)
+            except Exception as retry_exc:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=f"Inference failed: {retry_exc}") from retry_exc
+        else:
+            raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
 
     # top_k=None returns a list-of-lists; unwrap if needed.
     scores: list = results[0] if (results and isinstance(results[0], list)) else results
