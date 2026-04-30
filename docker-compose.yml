@@ -1,0 +1,10 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    # Mount backend dir so code changes reflect without rebuild during dev
+    volumes:
+      - ./backend:/app
+    environment:
+      - PYTHONUNBUFFERED=1

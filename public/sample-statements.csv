@@ -1,0 +1,5 @@
+id,text,ground_truth
+1,"I submitted my assignment before the deadline and included all references.",truthful
+2,"I definitely did not copy any part of this report from online sources.",deceptive
+3,"The package arrived exactly when the seller promised.",truthful
+4,"I was not at the scene even though my phone location says otherwise.",deceptive
