@@ -28,15 +28,35 @@ Inference runs entirely on the Python backend — the browser only sends text an
 
 ## Quick Start
 
-**1. Start the backend**
+**1. Create the backend environment (Miniconda)**
 
 ```bash
-pip install fastapi "uvicorn[standard]" python-multipart transformers optimum[onnxruntime]
+cd backend
+conda env create -f environment.yml
+conda activate deception-classifier
+```
+
+If you update `environment.yml` later, refresh the environment with:
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+**2. Start the backend**
+
+```bash
 cd backend
 python -m uvicorn app:app --reload --port 8000
 ```
 
-**2. Start the frontend**
+If you are not using Miniconda, install the backend dependencies manually instead:
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+**3. Start the frontend**
 
 ```bash
 npm install
